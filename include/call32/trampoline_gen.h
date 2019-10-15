@@ -12,13 +12,16 @@ private:
     size_t sourceStackOff = 0;
     int resultReg = 0;
     size_t resultStackOff = 0;
-    asmjit::x86::Gp::Id resultRegisters[3] = {
+    asmjit::x86::Gp::Id resultRegisters[6] = {
             asmjit::x86::Gp::kIdDi,
             asmjit::x86::Gp::kIdSi,
-            asmjit::x86::Gp::kIdDx
+            asmjit::x86::Gp::kIdDx,
+            asmjit::x86::Gp::kIdCx,
+            asmjit::x86::Gp::kIdR8,
+            asmjit::x86::Gp::kIdR9
     };
     bool resultUseRegister() const {
-        return resultReg < 3;
+        return resultReg < 6;
     }
 
     asmjit::x86::Gp::Id const &resultNextRegister() const {
