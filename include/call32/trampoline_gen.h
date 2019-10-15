@@ -9,6 +9,7 @@ class TrampolineGen {
 
 private:
     asmjit::x86::Assembler &cw;
+    asmjit::x86::Mem sourceStack;
     size_t sourceStackOff = 0;
     int resultReg = 0;
     size_t resultStackOff = 0;
@@ -29,8 +30,10 @@ private:
     }
 
 public:
-    TrampolineGen(asmjit::x86::Assembler &cw) : cw(cw) {
+    TrampolineGen(asmjit::x86::Assembler &cw, asmjit::x86::Mem src) : cw(cw), sourceStack(src) {
     }
+
+    size_t getStackSize() const { return resultStackOff; }
 
 private:
     template <typename RClass>
@@ -88,7 +91,8 @@ namespace detail {
 template <typename RClass>
 inline void TrampolineGen::genArgSimple() {
     using namespace asmjit;
-    auto src = x86::ptr(x86::rbp, sourceStackOff);
+    auto src = sourceStack;
+    src.addOffset(sourceStackOff);
     sourceStackOff += std::max(RClass::kThisSize, 4u);
     if (resultUseRegister()) {
         cw.mov(x86::Gp(RClass::kSignature, resultNextRegister()), src);
@@ -119,17 +123,23 @@ void TrampolineGen::genArgs() {
 
 template <typename Ret, typename ...Args>
 void *createTrampolineFor(asmjit::JitRuntime &rt, Ret (*what)(Args...)) {
-    asmjit::CodeHolder code64, code32;
+    using namespace asmjit;
+
+    CodeHolder code64, code32;
     code64.init(rt.codeInfo());
 
-    asmjit::x86::Assembler a (&code64);
-    TrampolineGen gen (a);
-    a.push(asmjit::x86::rbp);
-    a.mov(asmjit::x86::rbp, asmjit::x86::rsp);
-    a.add(asmjit::x86::rbp, 20);
+    x86::Assembler azero;
+    x86::Assembler a (&code64);
+    TrampolineGen genSize (azero, x86::ptr(x86::esp));
+    genSize.genArgs<Args...>();
+    auto stackSize = genSize.getStackSize();
+    TrampolineGen gen (a, x86::ptr(x86::esp, 12 + stackSize));
+    if (stackSize > 0)
+        a.sub(x86::esp, stackSize);
     gen.genArgs<Args...>();
-    a.pop(asmjit::x86::rbp);
     gen.genCall((void *) what);
+    if (stackSize > 0)
+        a.add(x86::esp, stackSize);
     uint8_t retf[1] = {0xCB};
     a.embed(retf, 1);
 
@@ -140,9 +150,9 @@ void *createTrampolineFor(asmjit::JitRuntime &rt, Ret (*what)(Args...)) {
     if (((size_t) (void *) t64) & ~0xffffffff)
         throw std::runtime_error("trampoline64 unreachable");
 
-    asmjit::CodeInfo ci32(asmjit::ArchInfo::kIdX86);
+    CodeInfo ci32(ArchInfo::kIdX86);
     code32.init(ci32);
-    asmjit::x86::Assembler a32 (&code32);
+    x86::Assembler a32 (&code32);
     uint8_t callf[7] = {0x9A, 0, 0, 0, 0, 0x33, 0};
     *((uint32_t *) &callf[1]) = (uint32_t) (size_t) t64;
     a32.embed(callf, 7);
