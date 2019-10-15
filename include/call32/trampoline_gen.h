@@ -2,6 +2,7 @@
 
 #include <asmjit/asmjit.h>
 #include <algorithm>
+#include <stdexcept>
 
 namespace call32 {
 
@@ -160,7 +161,7 @@ void *createTrampolineFor(asmjit::JitRuntime &rt, Ret (*what)(Args...)) {
     auto err = rt.add(&t64, &code64);
     if (err)
         throw std::runtime_error("trampoline64 add failed");
-    if (((size_t) (void *) t64) & ~0xffffffff)
+    if (((size_t) (void *) t64) & ~0xffffffffLU)
         throw std::runtime_error("trampoline64 unreachable");
 
     CodeInfo ci32(ArchInfo::kIdX86);
@@ -175,7 +176,7 @@ void *createTrampolineFor(asmjit::JitRuntime &rt, Ret (*what)(Args...)) {
     err = rt.add(&t32, &code32);
     if (err)
         throw std::runtime_error("trampoline32 add failed");
-    if (((size_t) (void *) t32) & ~0xffffffff)
+    if (((size_t) (void *) t32) & ~0xffffffffLU)
         throw std::runtime_error("trampoline32 unreachable");
 
     return (void *) t32;
