@@ -5,9 +5,17 @@
 
 namespace call32 {
 
+namespace detail {
+    template <typename FromClass, int FromAlignment, typename ToClass, int ToAlignment>
+    struct SimpleArgGen;
+}
+
 class TrampolineGen {
 
 private:
+    template <typename F, int FA, typename T, int TA>
+    friend struct detail::SimpleArgGen;
+
     asmjit::x86::Assembler &cw;
     asmjit::x86::Mem sourceStack;
     size_t sourceStackOff = 0;
@@ -35,13 +43,6 @@ public:
 
     size_t getStackSize() const { return resultStackOff; }
 
-private:
-    template <typename RClass>
-    void genArgSimple();
-
-public:
-    template <typename T>
-    void genArg();
 
     template <typename... Args>
     void genArgs();
@@ -69,55 +70,67 @@ public:
 
 namespace detail {
 
-    template<typename ...Args>
+    template<typename Arg, class Enable = void>
     struct ArgGen;
 
+    template<typename ...Args>
+    struct ArgsGen;
+
     template<typename ArgHead, typename ...Args>
-    struct ArgGen<ArgHead, Args...> {
+    struct ArgsGen<ArgHead, Args...> {
         static void gen(TrampolineGen &c) {
-            c.genArg<ArgHead>();
-            ArgGen<Args...>::gen(c);
+            ArgGen<ArgHead>::gen(c);
+            ArgsGen<Args...>::gen(c);
         }
     };
 
     template<>
-    struct ArgGen<> {
+    struct ArgsGen<> {
         static void gen(TrampolineGen &c) {
         }
     };
 
-}
+    template <typename FromClass, int FromAlignment = 0, typename ToClass = FromClass, int ToAlignment = FromAlignment>
+    struct SimpleArgGen {
+        static void gen(TrampolineGen &g) {
+            using namespace asmjit;
+            auto src = g.sourceStack;
+            if (FromAlignment != 0)
+                g.sourceStackOff = (g.sourceStackOff + FromAlignment - 1) / FromAlignment * FromAlignment;
+            src.addOffset(g.sourceStackOff);
+            g.sourceStackOff += std::max(FromClass::kThisSize, 4u);
+            if (g.resultUseRegister()) {
+                g.cw.mov(x86::Gp(ToClass::kSignature, g.resultNextRegister()), src);
+                g.resultReg += 1;
+            } else {
+                if (ToAlignment != 0)
+                    g.resultStackOff = (g.resultStackOff + ToAlignment - 1) / ToAlignment * ToAlignment;
+                auto axf = x86::Gp(FromClass::kSignature, x86::Gp::kIdAx);
+                auto axt = x86::Gp(ToClass::kSignature, x86::Gp::kIdAx);
+                if (axt.size() > axf.size())
+                    g.cw.xor_(axt, axt);
+                g.cw.mov(axf, src);
+                g.cw.mov(x86::ptr(x86::rsp, g.resultStackOff), axt);
+                g.resultStackOff += std::max(ToClass::kThisSize, 4u);
+            }
+        }
+    };
 
-template <typename RClass>
-inline void TrampolineGen::genArgSimple() {
-    using namespace asmjit;
-    auto src = sourceStack;
-    src.addOffset(sourceStackOff);
-    sourceStackOff += std::max(RClass::kThisSize, 4u);
-    if (resultUseRegister()) {
-        cw.mov(x86::Gp(RClass::kSignature, resultNextRegister()), src);
-        resultReg += 1;
-    } else {
-        auto ax = x86::Gp(RClass::kSignature, x86::Gp::kIdAx);
-        cw.mov(ax, src);
-        cw.mov(x86::ptr(x86::rsp, resultStackOff), ax);
-        resultStackOff += std::max(RClass::kThisSize, 4u);
-    }
-}
+    template <> struct ArgGen<short> : SimpleArgGen<asmjit::x86::Gpw, 2> {};
+    template <> struct ArgGen<unsigned short> : SimpleArgGen<asmjit::x86::Gpw, 2> {};
+    template <> struct ArgGen<int> : SimpleArgGen<asmjit::x86::Gpd, 4> {};
+    template <> struct ArgGen<unsigned int> : SimpleArgGen<asmjit::x86::Gpd, 4> {};
 
-template<>
-inline void TrampolineGen::genArg<short>() { genArgSimple<asmjit::x86::Gpw>(); }
-template<>
-inline void TrampolineGen::genArg<unsigned short>() { genArgSimple<asmjit::x86::Gpw>(); }
-template<>
-inline void TrampolineGen::genArg<int>() { genArgSimple<asmjit::x86::Gpd>(); }
-template<>
-inline void TrampolineGen::genArg<unsigned int>() { genArgSimple<asmjit::x86::Gpd>(); }
+    template <typename T>
+    struct ArgGen<T, typename std::enable_if_t<std::is_pointer<T>::value>> :
+            SimpleArgGen<asmjit::x86::Gpd, 4, asmjit::x86::Gpq, 8> {};
+
+}
 
 
 template <typename... Args>
 void TrampolineGen::genArgs() {
-    detail::ArgGen<Args...>::gen(*this);
+    detail::ArgsGen<Args...>::gen(*this);
 }
 
 
