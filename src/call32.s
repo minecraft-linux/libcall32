@@ -8,16 +8,13 @@
     .globl _call32_simple_d_offset
     .globl _call32_init_asm
     .globl call32_simple
+    .globl call32_switch_stack
 
 _call32_simple_d_start:
 _call32_simple_d_call64:
-    push    rbp
-	mov	    rax, rsp
-	mov     rsp, [_call32_simple_d_stack+rip]
-	push    rax
+	push    rbp
 	mov     rax, 0
 	lcall	[_call32_simple_d_argdata+rip]
-	pop     rsp
 	pop     rbp
 	ret
 
@@ -40,6 +37,16 @@ _call32_init_asm:
     mov     ax, 0x2b
     mov     ds, ax
     mov     es, ax
+    ret
+
+call32_switch_stack:
+	mov	    rax, rsp
+    mov     rsp, rsi
+    push    rax
+    mov     rax, rdi
+    mov     rdi, rdx
+    call    rax
+    pop     rsp
     ret
 
 call32_simple:
