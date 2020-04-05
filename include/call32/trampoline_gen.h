@@ -3,6 +3,7 @@
 #include <asmjit/asmjit.h>
 #include <algorithm>
 #include <stdexcept>
+#include <dlfcn.h>
 
 namespace call32 {
 
@@ -52,20 +53,25 @@ public:
         cw.call((uint64_t) to);
     }
 
-    /*
-
-    template <typename Ret, typename = std::enable_if_t<std::is_pointer<Ret>::value>>
-    void genCheckRet() {
+    template <typename Ret, std::enable_if_t<std::is_pointer<Ret>::value, int> = 0>
+    void genCheckRet(void *to) {
         using namespace asmjit;
-        cw.cmp(x86::rax, 0xFFFFFFFF);
-        cw.jg((uint64_t) sf.reportBadPointerReturn);
+        cw.push(x86::rax);
+        cw.shr(x86::rax, 32);
+        cw.pop(x86::rax);
+        auto finelbl = cw.newLabel();
+        cw.jz(finelbl);
+        cw.mov(x86::rdi, (uint64_t) to);
+        cw.call((uint64_t) (void *) +[](void *realfunc) {
+            printf("bad pointer return\n");
+            abort();
+        });
+        cw.bind(finelbl);
     }
 
-    template <typename Ret>
-    void genCheckRet() {
+    template <typename Ret, std::enable_if_t<!std::is_pointer<Ret>::value, int> = 0>
+    void genCheckRet(void *to) {
     }
-
-    */
 
 };
 
@@ -101,7 +107,12 @@ namespace detail {
             src.addOffset(g.sourceStackOff);
             g.sourceStackOff += std::max(FromClass::kThisSize, 4u);
             if (g.resultUseRegister()) {
-                g.cw.mov(x86::Gp(ToClass::kSignature, g.resultNextRegister()), src);
+                auto dst = x86::Gp(ToClass::kSignature, g.resultNextRegister());
+                if (ToClass::kThisSize > FromClass::kThisSize) {
+                    g.cw.xor_(dst, dst);
+                    dst = x86::Gp(FromClass::kSignature, g.resultNextRegister());
+                }
+                g.cw.mov(dst, src);
                 g.resultReg += 1;
             } else {
                 if (ToAlignment != 0)
@@ -117,14 +128,26 @@ namespace detail {
         }
     };
 
+    template <> struct ArgGen<char> : SimpleArgGen<asmjit::x86::GpbLo, 1> {};
+    template <> struct ArgGen<unsigned char> : SimpleArgGen<asmjit::x86::GpbLo, 1> {};
     template <> struct ArgGen<short> : SimpleArgGen<asmjit::x86::Gpw, 2> {};
     template <> struct ArgGen<unsigned short> : SimpleArgGen<asmjit::x86::Gpw, 2> {};
     template <> struct ArgGen<int> : SimpleArgGen<asmjit::x86::Gpd, 4> {};
     template <> struct ArgGen<unsigned int> : SimpleArgGen<asmjit::x86::Gpd, 4> {};
+    template <> struct ArgGen<long> : SimpleArgGen<asmjit::x86::Gpd, 4, asmjit::x86::Gpq, 8> {};
+    template <> struct ArgGen<unsigned long> : SimpleArgGen<asmjit::x86::Gpd, 4, asmjit::x86::Gpq, 8> {};
+    template <> struct ArgGen<long long> : SimpleArgGen<asmjit::x86::Gpq, 8> {};
+    template <> struct ArgGen<unsigned long long> : SimpleArgGen<asmjit::x86::Gpq, 8> {};
+    template <> struct ArgGen<float> : SimpleArgGen<asmjit::x86::Gpd, 4> {};
+    template <> struct ArgGen<double> : SimpleArgGen<asmjit::x86::Gpq, 8> {}; //todo: broken?
+
 
     template <typename T>
     struct ArgGen<T, typename std::enable_if_t<std::is_pointer<T>::value>> :
             SimpleArgGen<asmjit::x86::Gpd, 4, asmjit::x86::Gpq, 8> {};
+    template <typename T>
+    struct ArgGen<T, typename std::enable_if_t<std::is_enum<T>::value>> :
+            SimpleArgGen<asmjit::x86::Gpd, 4, asmjit::x86::Gpd, 4> {};
 
 }
 
@@ -147,11 +170,15 @@ void *createTrampolineFor(asmjit::JitRuntime &rt, Ret (*what)(Args...)) {
     TrampolineGen genSize (azero, x86::ptr(x86::esp));
     genSize.genArgs<Args...>();
     auto stackSize = genSize.getStackSize();
-    TrampolineGen gen (a, x86::ptr(x86::esp, 12 + stackSize));
+    auto totalStackSizeUsed = stackSize + /* esi&edx save */ 8 + /* long jump */ 8 + /* final jump */ 4;
+    if ((totalStackSizeUsed % 16) != 0) // align up stack
+        stackSize += 16 - (totalStackSizeUsed % 16);
+    TrampolineGen gen (a, x86::ptr(x86::esp, 20 + stackSize));
     if (stackSize > 0)
         a.sub(x86::esp, stackSize);
     gen.genArgs<Args...>();
     gen.genCall((void *) what);
+    gen.genCheckRet<Ret>((void *) what);
     if (stackSize > 0)
         a.add(x86::esp, stackSize);
     uint8_t retf[1] = {0xCB};
@@ -167,9 +194,13 @@ void *createTrampolineFor(asmjit::JitRuntime &rt, Ret (*what)(Args...)) {
     CodeInfo ci32(ArchInfo::kIdX86);
     code32.init(ci32);
     x86::Assembler a32 (&code32);
+    a32.push(x86::edi);
+    a32.push(x86::esi);
     uint8_t callf[7] = {0x9A, 0, 0, 0, 0, 0x33, 0};
     *((uint32_t *) &callf[1]) = (uint32_t) (size_t) t64;
     a32.embed(callf, 7);
+    a32.pop(x86::esi);
+    a32.pop(x86::edi);
     a32.ret();
 
     void (*t32)();
